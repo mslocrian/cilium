@@ -14,30 +14,7 @@
 
 package endpoint
 
-// EndpointEvent is an event that can be queued for an Endpoint on its
-// EventQueue.
-type EndpointEvent struct {
-	// EndpointEventMetadata is the information about the event which is sent
-	// by its queuer.
-	EndpointEventMetadata interface{}
-
-	// EventResults is a channel on which the results of the event are sent.
-	// It is populated by the EventQueue itself, not by the queuer.
-	EventResults chan interface{}
-
-	// Cancelled is a channel which is called when the EventQueue is being drained.
-	// The event was not ran if it was signaled upon.
-	Cancelled chan struct{}
-}
-
-// NewEndpointEvent returns an EndpointEvent with all fields initialized.
-func NewEndpointEvent(meta interface{}) *EndpointEvent {
-	return &EndpointEvent{
-		EndpointEventMetadata: meta,
-		EventResults:          make(chan interface{}, 1),
-		Cancelled:             make(chan struct{}),
-	}
-}
+import "github.com/cilium/cilium/pkg/eventqueue"
 
 // EndpointRegenerationEvent contains all fields necessary to regenerate an endpoint.
 type EndpointRegenerationEvent struct {
@@ -77,4 +54,18 @@ func (ev *EndpointRevisionBumpEvent) Handle() interface{} {
 	ev.ep.SetPolicyRevision(ev.Rev)
 	ev.ep.getLogger().Debug("sending endpoint revision bump result")
 	return struct{}{}
+}
+
+// PolicyRevisionBumpEvent queues an event for the given endpoint to set its
+// realized policy revision to rev. This may block depending on if events have
+// been queued up for the given endpoint. It blocks until the event has
+// succeeded, or if the event has been cancelled.
+func (e *Endpoint) PolicyRevisionBumpEvent(rev uint64) {
+	epBumpEvent := eventqueue.NewEvent(&EndpointRevisionBumpEvent{Rev: rev, ep: e})
+	e.QueueEvent(epBumpEvent)
+	select {
+	case _ = <-epBumpEvent.EventResults:
+		e.getLogger().Infof("bumped endpoint revision to %d", rev)
+	case <-epBumpEvent.Cancelled:
+	}
 }

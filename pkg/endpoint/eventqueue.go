@@ -14,110 +14,23 @@
 
 package endpoint
 
-import "reflect"
+import (
+	"github.com/cilium/cilium/pkg/eventqueue"
+)
 
-// EventQueue is a structured which is utilized to handle events for a given
-// Endpoint in a generic way.
-type EventQueue struct {
-	// This should always be a buffered channel.
-	events chan *EndpointEvent
-	close  chan struct{}
-}
-
-func newEventQueue() *EventQueue {
-	return &EventQueue{
-		// Only one event can be consumed per endpoint
-		// at a time.
-		events: make(chan *EndpointEvent, 1),
-		close:  make(chan struct{}),
-	}
-
-}
-
-// PolicyRevisionBumpEvent queues an event for the given endpoint to set its
-// realized policy revision to rev. This may block depending on if events have
-// been queued up for the given endpoint. It blocks until the event has
-// succeeded, or if the event has been cancelled.
-func (e *Endpoint) PolicyRevisionBumpEvent(rev uint64) {
-	epBumpEvent := NewEndpointEvent(&EndpointRevisionBumpEvent{Rev: rev, ep: e})
-	e.QueueEvent(epBumpEvent)
-	select {
-	case _ = <-epBumpEvent.EventResults:
-		e.getLogger().Infof("bumped endpoint revision to %d", rev)
-	case <-epBumpEvent.Cancelled:
-	}
-}
-
-// initializeEventQueue is a wrapper around runEventQueue that ensures that each
-// endpoint only has one event queue running at all times.
+// initializeEventQueue initializes the endpoint's event queue. Only one event
+// queue can ever be initialized for the lifetime of a given endpoint
 func (e *Endpoint) initializeEventQueue() {
-	e.eventQueueOnce.Do(
-		func() {
-			e.runEventQueue()
-		})
+	e.getLogger().Debug("starting endpoint event queue")
+	go e.eventQueue.RunEventQueue()
 }
 
 // QueueEvent enqueues epEvent to the endpoint's EventQueue. It may block until
 // the current event being processed by the endpoint's event queue is finished.
 // If the event queue has been closed, then it is signalled to the event that
 // the event is not ran (i.e., it has been "cancelled").
-func (e *Endpoint) QueueEvent(epEvent *EndpointEvent) {
-	select {
-	case <-e.eventQueue.close:
-		close(epEvent.Cancelled)
-	default:
-		e.eventQueue.events <- epEvent
-	}
-}
-
-// runEventQueue consumes events that have been queued for this endpoint. It
-// is presumed that the eventQueue for an endpoint is a buffered channel with
-// a length of one (i.e., only one event can be processed at a time). All
-// business logic for handling queued events is contained within this function.
-// Each event must be handled in such a way such that a result is sent across
-// its EventResults channel, as the queuer of an event may be waiting on a
-// result from the event. Otherwise, if the event queue is closed, then all
-// events which were queued up are cancelled. It is assumed that the caller
-// handles both cases (cancel, or result) gracefully.
-func (e *Endpoint) runEventQueue() {
-	for {
-		e.getLogger().Debug("starting endpoint event queue")
-		select {
-		// Receive next event.
-		case endpointEvent := <-e.eventQueue.events:
-			{
-				// Handle each event type.
-				switch t := endpointEvent.EndpointEventMetadata.(type) {
-				case EventHandler:
-					ev := endpointEvent.EndpointEventMetadata.(EventHandler)
-					evRes := ev.Handle()
-					log.Warningf("EV TYPE: %s", reflect.TypeOf(evRes))
-					endpointEvent.EventResults <- evRes
-				default:
-
-					e.getLogger().Error("unsupported function type provided to Endpoint event queue: %T", t)
-				}
-
-				// Ensures that no more results can be sent as the event has
-				// already been processed.
-				close(endpointEvent.EventResults)
-			}
-		// When the endpoint is deleted, cause goroutine which consumes events
-		// from queue to exit via closing close channel.
-		case <-e.eventQueue.close:
-			{
-				e.getLogger().Debug("closing endpoint event queue")
-
-				// Drain queue of all events. This ensures that all events that
-				// nothing blocks on an EventResult which will never be created.
-				for drainEvent := range e.eventQueue.events {
-					close(drainEvent.Cancelled)
-				}
-				close(e.eventQueue.events)
-				return
-			}
-		}
-	}
+func (e *Endpoint) QueueEvent(epEvent *eventqueue.Event) {
+	e.eventQueue.QueueEvent(epEvent)
 }
 
 // CloseEventQueue closes the event queue for the given endpoint if it hasn't
@@ -125,15 +38,5 @@ func (e *Endpoint) runEventQueue() {
 // endpoint will be cancelled. This operation should only be performed when the
 // endpoint is being deleted.
 func (e *Endpoint) CloseEventQueue() {
-	select {
-	case <-e.eventQueue.close:
-		e.getLogger().Warning("tried to close event queue, but it already has been closed")
-	default:
-		e.getLogger().Debug("closing endpoint event queue")
-		close(e.eventQueue.close)
-	}
-}
-
-type EventHandler interface {
-	Handle() interface{}
+	e.eventQueue.CloseEventQueue()
 }
