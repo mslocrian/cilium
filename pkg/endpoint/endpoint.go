@@ -25,7 +25,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unsafe"
 
@@ -293,8 +292,6 @@ type Endpoint struct {
 	desiredPolicy *policy.EndpointPolicy
 
 	realizedPolicy *policy.EndpointPolicy
-
-	eventQueueOnce sync.Once
 
 	eventQueue *eventqueue.EventQueue
 
