@@ -186,6 +186,15 @@ type Map struct {
 	once sync.Once
 	lock lock.RWMutex
 
+	// inParallelMode is true when the Map is currently being run in
+	// parallel and all modifications are performed on both maps until
+	// EndParallelMode() is called.
+	inParallelMode bool
+
+	// cachedCommonName is the common portion of the name excluding any
+	// endpoint ID
+	cachedCommonName string
+
 	// enableSync is true when synchronization retries have been enabled.
 	enableSync bool
 
@@ -383,10 +392,83 @@ func (m *Map) setPathIfUnset() error {
 	return nil
 }
 
+// EndParallelMode ends the parallel mode of a map
+func (m *Map) EndParallelMode() error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	if !m.inParallelMode {
+		return fmt.Errorf("map is not in parallel mode")
+	}
+
+	m.inParallelMode = false
+	m.scopedLogger().Debug("End of parallel mode")
+
+	return nil
+}
+
+// OpenParallel is similar to OpenOrCreate() but prepares the existing map to
+// be faded out while a new map is taking over. This can be used if a map is
+// shared between multiple consumers and the context of the shared map is
+// changing. Any update to the shared map would impact all consumers and
+// consumers can only be updated one by one. Parallel mode allows for consumers
+// to continue using the old version of the map until the consumer is updated
+// to use the new version.
+func (m *Map) OpenParallel() (bool, error) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	if m.fd != 0 {
+		return false, fmt.Errorf("OpenParallel() called on already open map")
+	}
+
+	if err := m.setPathIfUnset(); err != nil {
+		return false, err
+	}
+
+	if _, err := os.Stat(m.path); err == nil {
+		err := os.Remove(m.path)
+		if err != nil {
+			log.WithError(err).Warning("Unable to remove BPF map for parallel operation")
+			// Fall back to non-parallel mode
+		} else {
+			m.scopedLogger().Debug("Opening map in parallel mode")
+			m.inParallelMode = true
+		}
+	}
+
+	return m.openOrCreate()
+}
+
+// OpenOrCreate attempts to open the Map, or if it does not yet exist, create
+// the Map. If the existing map's attributes such as map type, key/value size,
+// capacity, etc. do not match the Map's attributes, then the map will be
+// deleted and reopened without any attempt to retain its previous contents.
+// If the map is marked as non-persistent, it will always be recreated.
+//
+// If the map type is MapTypeLRUHash or MapTypeLPMTrie and the kernel lacks
+// support for this map type, then the map will be opened as MapTypeHash
+// instead. Note that the BPF code that interacts with this map *MUST* be
+// structured in such a way that the map is declared as the same type based on
+// the same probe logic (eg HAVE_LRU_MAP_TYPE, HAVE_LPM_MAP_TYPE).
+//
+// For code that uses an LPMTrie, the BPF code must also use macros to retain
+// the "longest prefix match" behaviour on top of the hash maps, for example
+// via LPM_LOOKUP_FN() (see bpf/lib/maps.h).
+//
+// To detect map type support properly, this function must be called after
+// a call to ReadFeatureProbes(); failure to do so will result in LPM or LRU
+// map types being unconditionally opened as hash maps.
+//
+// Returns whether the map was deleted and recreated, or an optional error.
 func (m *Map) OpenOrCreate() (bool, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
+	return m.openOrCreate()
+}
+
+func (m *Map) openOrCreate() (bool, error) {
 	if m.fd != 0 {
 		return false, nil
 	}
