@@ -14,6 +14,8 @@
 
 package endpoint
 
+import "reflect"
+
 // EventQueue is a structured which is utilized to handle events for a given
 // Endpoint in a generic way.
 type EventQueue struct {
@@ -37,7 +39,7 @@ func newEventQueue() *EventQueue {
 // been queued up for the given endpoint. It blocks until the event has
 // succeeded, or if the event has been cancelled.
 func (e *Endpoint) PolicyRevisionBumpEvent(rev uint64) {
-	epBumpEvent := NewEndpointEvent(EndpointRevisionBumpEvent{Rev: rev})
+	epBumpEvent := NewEndpointEvent(&EndpointRevisionBumpEvent{Rev: rev, ep: e})
 	e.QueueEvent(epBumpEvent)
 	select {
 	case _ = <-epBumpEvent.EventResults:
@@ -85,33 +87,15 @@ func (e *Endpoint) runEventQueue() {
 		case endpointEvent := <-e.eventQueue.events:
 			{
 				// Handle each event type.
-				switch endpointEvent.EndpointEventMetadata.(type) {
-				case EndpointRegenerationEvent:
-
-					ev := endpointEvent.EndpointEventMetadata.(EndpointRegenerationEvent)
-					e.getLogger().Debug("received endpoint regeneration event")
-
-					err := e.regenerate(ev.owner, ev.regenContext)
-					e.getLogger().Debug("sending endpoint regeneration result")
-					regenResult := EndpointRegenerationResult{
-						err: err,
-					}
-					endpointEvent.EventResults <- regenResult
-				case EndpointRevisionBumpEvent:
-					// TODO: if the endpoint is not in a 'ready' state that means that
-					// we cannot set the policy revision, as something else has
-					// changed endpoint state which necessitates regeneration,
-					// *or* the endpoint is in a not-ready state (i.e., a prior
-					// regeneration failed, so there is no way that we can
-					// realize the policy revision yet. Should this be signaled
-					// to the routine waiting for the result of this event?
-					e.getLogger().Info("received endpoint revision bump event")
-					ev := endpointEvent.EndpointEventMetadata.(EndpointRevisionBumpEvent)
-					e.getLogger().Info("sending endpoint revision bump result")
-					e.SetPolicyRevision(ev.Rev)
-					endpointEvent.EventResults <- struct{}{}
+				switch t := endpointEvent.EndpointEventMetadata.(type) {
+				case EventHandler:
+					ev := endpointEvent.EndpointEventMetadata.(EventHandler)
+					evRes := ev.Handle()
+					log.Warningf("EV TYPE: %s", reflect.TypeOf(evRes))
+					endpointEvent.EventResults <- evRes
 				default:
-					e.getLogger().Error("unsupported function type provided to Endpoint event queue")
+
+					e.getLogger().Error("unsupported function type provided to Endpoint event queue: %T", t)
 				}
 
 				// Ensures that no more results can be sent as the event has
@@ -148,4 +132,8 @@ func (e *Endpoint) CloseEventQueue() {
 		e.getLogger().Debug("closing endpoint event queue")
 		close(e.eventQueue.close)
 	}
+}
+
+type EventHandler interface {
+	Handle() interface{}
 }

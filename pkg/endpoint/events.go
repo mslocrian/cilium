@@ -43,6 +43,14 @@ func NewEndpointEvent(meta interface{}) *EndpointEvent {
 type EndpointRegenerationEvent struct {
 	owner        Owner
 	regenContext *regenerationContext
+	ep           *Endpoint
+}
+
+func (ev *EndpointRegenerationEvent) Handle() interface{} {
+	err := ev.ep.regenerate(ev.owner, ev.regenContext)
+	return &EndpointRegenerationResult{
+		err: err,
+	}
 }
 
 // EndpointRegenerationResult contains the results of an endpoint regeneration.
@@ -54,4 +62,19 @@ type EndpointRegenerationResult struct {
 // revision of a given endpoint.
 type EndpointRevisionBumpEvent struct {
 	Rev uint64
+	ep  *Endpoint
+}
+
+func (ev *EndpointRevisionBumpEvent) Handle() interface{} {
+	// TODO: if the endpoint is not in a 'ready' state that means that
+	// we cannot set the policy revision, as something else has
+	// changed endpoint state which necessitates regeneration,
+	// *or* the endpoint is in a not-ready state (i.e., a prior
+	// regeneration failed, so there is no way that we can
+	// realize the policy revision yet. Should this be signaled
+	// to the routine waiting for the result of this event?
+	ev.ep.getLogger().Debug("received endpoint revision bump event")
+	ev.ep.SetPolicyRevision(ev.Rev)
+	ev.ep.getLogger().Debug("sending endpoint revision bump result")
+	return struct{}{}
 }

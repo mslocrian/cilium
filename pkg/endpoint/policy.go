@@ -430,9 +430,10 @@ func (e *Endpoint) Regenerate(owner Owner, regenMetadata *ExternalRegenerationMe
 
 			regenContext.DoneFunc = doneFunc
 
-			epEvent := NewEndpointEvent(EndpointRegenerationEvent{
+			epEvent := NewEndpointEvent(&EndpointRegenerationEvent{
 				owner:        owner,
 				regenContext: regenContext,
+				ep:           e,
 			})
 
 			e.QueueEvent(epEvent)
@@ -441,7 +442,8 @@ func (e *Endpoint) Regenerate(owner Owner, regenMetadata *ExternalRegenerationMe
 			case result := <-epEvent.EventResults:
 				// Regeneration is done, allow other builds to occur.
 				doneFunc()
-				regenResult := result.(EndpointRegenerationResult)
+				log.Warningf("EV TYPE FROM REGEN: %T", reflect.TypeOf(result))
+				regenResult := result.(*EndpointRegenerationResult)
 				err = regenResult.err
 
 				// Build was successful whether regeneration errored out of not.
